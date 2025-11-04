@@ -4,4 +4,215 @@ author: "Brubru and Adriel"
 format: html
 ---
 
-## Hi!
+```{r}
+#| message: false
+
+here::i_am("Brazifrenchia.Rproj")
+library(quantmod)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(mFilter)
+library(lubridate)
+library(knitr)
+```
+
+
+# Introduction
+
+We aim, in this short paper, to look at the cyclicality of volatility. Of course it is affected by exogenous shocks, such as the COVID-crisis or the 2009 financial crisis. We want to explore whether there is a cyclical one, **i.e.**, we look for volatility that follows, every period, some pattern.
+
+# Data manipulation
+
+To explore cyclicality, we will focus on the US, which allows better data analysis due to the quality and length of the latter.
+
+```{r}
+getSymbols("^GSPC", src = "yahoo", from = "1990-01-01")
+getSymbols("GDPC1", src = "FRED")
+
+gdp <- data.frame(
+  date = as.Date(index(GDPC1)),
+  gdp = as.numeric(GDPC1)
+) |>
+  mutate(
+    log_gdp = log(gdp)
+  )
+
+sp <- data.frame(
+  date = as.Date(index(GSPC)),
+  open = as.numeric(GSPC$GSPC.Open),
+  close = as.numeric(GSPC$GSPC.Close),
+  high = as.numeric(GSPC$GSPC.High),
+  low = as.numeric(GSPC$GSPC.Low)
+)
+```
+
+The data sets `sp` displays daily prices for the stock in OHLC format. The dataset `gdp` displays quarterly chained 2017 bn-$ GDP in the US since 1947.
+
+## GDP dataset analysis
+
+The analysis is straightforward, GDP grew between 1947 and 2027:
+
+```{r}
+gdp |>
+  ggplot(aes(x = date, y = gdp)) +
+  geom_line() +
+  theme_minimal()
+```
+We also observe the drops during COVID-time and during the financial crisis.
+
+## S&P500 dataset analysis
+
+We can plot the different prices against one another:
+
+```{r}
+sp |>
+  pivot_longer(!date,
+               names_to = "price",
+               values_to = "value") |>
+  ggplot(aes(x = date, y = value)) +
+  geom_line() +
+  facet_wrap(vars(price)) +
+  theme_minimal()
+```
+
+## Computation of the essential variables
+
+We seek to find a potential *cyclic* behavior in *volatility*. Therefore, we'll first need to compute rolling volatility, using Yang-Zhang (2000) volatility formula:
+
+$$
+\sigma^2_{YZ}=k \sigma^2_{OC}+(1-k)\sigma^2_{C0}+\sigma^2_{RS}
+$$
+Where $k=\frac{0.34}{1.34+\frac{n+1}{n-1}}$, is a weight parameter, $\sigma^2_{OC}=V(\ln{O_t}-\ln{C_{t-1}})$ is the overnight variance, $\sigma^2_{CO}=V(\ln{C_t}-\ln{O_{t-1}})$ is the open-close variance and: 
+
+$$\sigma^2_{RS}=\frac{1}{n} \sum_{t=1}^{n}{\left(\ln{H_t}-\ln{C_t} \right)\left(\ln{H_t}-\ln{O_t} \right) + \left(\ln{L_t}-\ln{C_t} \right)\left(\ln{L_t}-\ln{O_t} \right)}$$
+is the Rogers-Satchell variance. The (daily annualized) Yang-Zhang volatility is therefore given by:
+
+$$
+\sigma_{YZ}=\sqrt{252\cdot \sigma^2_{YZ}}
+$$
+
+```{r}
+k=0.34/(1.34+ (nrow(sp)+1)/(nrow(sp)-1))
+sp <- sp |> 
+  mutate(
+    oc = log(open)-lag(log(close)),
+    co = log(close)-log(open),
+    rs = (log(high)-log(close))*(log(high)-log(open)) +
+      (log(low)-log(close))*(log(low)-log(open)),
+    yz = sqrt(252 * (
+      k*oc^2+(1-k)*co^2+lag(rs)
+    ))
+  )
+```
+
+We can also use close-to-close volatility, which is simpler to compute, and given by:
+
+$$
+\sigma_{C}=\sqrt{ \frac{252}{n-1} \sum_{t=2}^{n} \left(\ln \left(\frac{C_t}{C_{t-1}}\right)-\bar{r} \right)^2}
+$$
+```{r}
+sp <- sp |>
+  mutate(
+    r = log(close) - lag(log(close)),
+    ctc = sqrt(252) * sqrt(rollapply(r, 21, var, fill = NA))
+  ) |>
+  select(date, yz, ctc) |>
+  drop_na()
+```
+
+And we can plot for comparison:
+
+```{r}
+sp |>
+  ggplot(aes(x = date, y = yz)) +
+  geom_line() +
+  geom_line(aes(y=ctc), colour = "skyblue")
+```
+
+To analyze the cyclic behavior, we need to divid our time series for GDP ($y_t$) into two components, a cyclical one ($c_t$) and a trend component ($\tau_t$). The Hodrick-Prescott filter decomposes the time series by minimizing the objective function:
+
+$$
+\min_{\tau_t} \sum_{t=1}^{T} (y_t - \tau_t)^2 + \lambda \sum_{t=2}^{T-1} \left[(\tau_{t+1} - \tau_t) - (\tau_t - \tau_{t-1})\right]^2
+$$
+Where $\lambda=1600$ controls for smoothness, using quarterly data.
+
+```{r}
+hp <- mFilter::hpfilter(
+  gdp$log_gdp,
+  freq = 1600,
+  type = "lambda"
+)
+gdp <- gdp |> 
+  mutate(
+    trend = as.numeric(hp$trend),
+    cycle = as.numeric(hp$cycle)
+  ) |>
+  select(date, cycle)
+gdp |>
+  ggplot(aes(x = date, y = cycle)) +
+  geom_line()
+```
+# Merging and plotting
+
+We have GDP in quarterly measure and S&P index volatility in daily. We need to transform the latter:
+
+```{r}
+sp <- sp |>
+  mutate(date = floor_date(date, "quarter")) |>
+  group_by(date) |>
+  summarise(
+    yz = last(yz),
+    ctc = last(ctc)
+  )
+```
+
+And now merge the dataset:
+
+```{r}
+data <- sp |>
+  inner_join(gdp, by = "date")
+```
+
+And we can plot `cycle` against both `yz` and `ctc` :
+
+```{r}
+data |>
+  ggplot(aes(x = cycle, y = yz)) +
+  geom_point() +
+  geom_smooth(method = "lm", formula = 'y ~ x')
+data |>
+  ggplot(aes(x = cycle, y = ctc)) +
+  geom_point() +
+  geom_smooth(method = "lm", formula = 'y ~ x')
+```
+There seems to be a **a priori** negative relationship, which would indicate countercyclicality. There are two methods to estimate this.
+
+# Two methods to measure the relationship
+
+## Correlation approach
+
+We seek to compute the correlation of the time series, given by $\rho =\text{corr}(\sigma_t, y_t^c)$. For both, this gives:
+
+```{r}
+data |>
+  summarise(
+    corr_yz = cor(cycle,yz, use = "complete.obs"),
+    corr_ctc = cor(cycle, ctc, use = "complete.obs")
+  ) |>
+  kable()
+```
+
+Both are negative. Indeed, when the economy slows down, incertainty rises and therefore so does the volatility.
+
+## Regression approach
+
+We can also regress $\sigma_t$ on $y_t^c$ using the (linear) regression equation:
+
+$$
+\sigma_t = \alpha + \beta \cdot y_t^c+\varepsilon_t
+$$
+
+```{r}
+
+```
