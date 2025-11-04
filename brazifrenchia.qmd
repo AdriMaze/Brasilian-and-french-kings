@@ -214,7 +214,10 @@ $$
 $$
 
 ```{r}
-
+reg <- lm(cycle ~ ctc, data = data)
+reg_2 <- lm(cycle ~yz, data = data) 
+knitr::kable(reg_2$coefficients)
+knitr::kable(reg$coefficients)
 ```
 
 
