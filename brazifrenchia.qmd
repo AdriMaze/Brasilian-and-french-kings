@@ -4,18 +4,6 @@ author: "Brubru and Adriel"
 format: html
 ---
 
-## Hi!
-
-## doubrazil 
-
-douBASILE doubasileeee
-
-# lalalala
-
-
-## Bruno
-
-
 ```{r}
 #| message: false
 
@@ -33,8 +21,6 @@ library(knitr)
 # Introduction
 
 We aim, in this short paper, to look at the cyclicality of volatility. Of course it is affected by exogenous shocks, such as the COVID-crisis or the 2009 financial crisis. We want to explore whether there is a cyclical one, **i.e.**, we look for volatility that follows, every period, some pattern.
-
-yes! F donald trump wowwww alalalala blabblublu
 
 # Data manipulation
 
